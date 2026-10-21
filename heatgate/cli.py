@@ -43,7 +43,11 @@ def main(argv=None):
     r = sub.add_parser("run"); r.add_argument("--high", type=float, default=0.8)
     r.add_argument("--low", type=float, default=0.5); r.add_argument("--poll", type=float, default=1.0)
     r.add_argument("command", nargs=argparse.REMAINDER)
+    sub.add_parser("mcp", help="run a stdio MCP server")
     a = ap.parse_args(argv)
+    if a.cmd == "mcp":
+        from .mcp import serve
+        return serve()
     if a.cmd == "status":
         d = readings()
         if a.json:

@@ -12,3 +12,4 @@ jobs:
       - run: pip install -e .
       - run: python -m unittest discover -v tests
       - run: heatgate status
+      - run: python -m pip install build && python -m build
