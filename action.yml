@@ -1,0 +1,100 @@
+name: heatgate heat report
+description: Record per-run "heat" (max of load1/cores and CPU busy fraction) and write avg/peak heat, duration and CPU-minutes to the job summary.
+branding: {icon: thermometer, color: orange}
+inputs:
+  mode:
+    description: "'start' (begin background sampling), 'stop' (stop sampling and report), or 'run' (wrap the `run` command). Defaults to 'run' when `run` is set, else 'start'."
+    required: false
+    default: ""
+  run:
+    description: Shell command to run while sampling (mode 'run').
+    required: false
+    default: ""
+  interval:
+    description: Seconds between samples.
+    required: false
+    default: "5"
+  title:
+    description: Heading for the summary section.
+    required: false
+    default: "Heat report"
+  artifact:
+    description: "If non-empty, upload the JSON summary + raw samples as an artifact with this name."
+    required: false
+    default: ""
+outputs:
+  heat-avg:
+    description: "Average heat (0..1+)"
+    value: "${{ steps.report.outputs.heat-avg }}"
+  heat-peak:
+    description: "Peak heat"
+    value: "${{ steps.report.outputs.heat-peak }}"
+  duration-s:
+    description: "Sampled duration in seconds"
+    value: "${{ steps.report.outputs.duration-s }}"
+  cpu-minutes:
+    description: "CPU-minutes used on the runner (all processes, /proc/stat deltas)"
+    value: "${{ steps.report.outputs.cpu-minutes }}"
+  cpu-util:
+    description: "Busy fraction of all cores over the window"
+    value: "${{ steps.report.outputs.cpu-util }}"
+  cores:
+    description: "Logical cores"
+    value: "${{ steps.report.outputs.cores }}"
+  samples:
+    description: "Number of samples"
+    value: "${{ steps.report.outputs.samples }}"
+  json:
+    description: "Path to the JSON summary"
+    value: "${{ steps.report.outputs.json }}"
+runs:
+  using: composite
+  steps:
+    - id: cfg
+      shell: bash
+      run: |
+        mode="${{ inputs.mode }}"
+        if [ -z "$mode" ]; then if [ -n "${{ inputs.run != '' && 'x' || '' }}" ]; then mode=run; else mode=start; fi; fi
+        echo "mode=$mode" >> "$GITHUB_OUTPUT"
+        dir="$RUNNER_TEMP/heatgate"; mkdir -p "$dir"; echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        if [ ! -x "$dir/venv/bin/heatgate" ]; then
+          python3 -m venv "$dir/venv"
+          # install heatgate from this action's own ref (needs sample/report, not in PyPI 0.1.0)
+          "$dir/venv/bin/pip" install -q "${{ github.action_path }}"
+        fi
+    - if: steps.cfg.outputs.mode == 'start' || steps.cfg.outputs.mode == 'run'
+      shell: bash
+      run: |
+        d="${{ steps.cfg.outputs.dir }}"; rm -f "$d/samples.jsonl"
+        nohup setsid "$d/venv/bin/heatgate" sample --out "$d/samples.jsonl" --interval "${{ inputs.interval }}" > "$d/sampler.log" 2>&1 &
+        echo $! > "$d/sampler.pid"
+        sleep 1
+    - if: steps.cfg.outputs.mode == 'run'
+      shell: bash
+      env: {HEATGATE_RUN: "${{ inputs.run }}"}
+      run: |
+        set +e
+        bash -eo pipefail -c "$HEATGATE_RUN"; echo $? > "${{ steps.cfg.outputs.dir }}/rc"
+    - id: report
+      if: always() && (steps.cfg.outputs.mode == 'stop' || steps.cfg.outputs.mode == 'run')
+      shell: bash
+      run: |
+        d="${{ steps.cfg.outputs.dir }}"
+        if [ -f "$d/sampler.pid" ]; then
+          pid=$(cat "$d/sampler.pid"); kill -TERM "$pid" 2>/dev/null || true
+          for i in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+          rm -f "$d/sampler.pid"
+        fi
+        "$d/venv/bin/heatgate" report "$d/samples.jsonl" --title "${{ inputs.title }}" \
+          --summary "$GITHUB_STEP_SUMMARY" --github-output "$GITHUB_OUTPUT" --json-out "$d/heat.json"
+        echo "json=$d/heat.json" >> "$GITHUB_OUTPUT"
+    - if: always() && inputs.artifact != '' && steps.report.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: |
+          ${{ steps.cfg.outputs.dir }}/heat.json
+          ${{ steps.cfg.outputs.dir }}/samples.jsonl
+    - if: steps.cfg.outputs.mode == 'run'
+      shell: bash
+      run: exit "$(cat "${{ steps.cfg.outputs.dir }}/rc" 2>/dev/null || echo 1)"

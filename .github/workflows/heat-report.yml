@@ -1,0 +1,24 @@
+name: Heat report (self-test)
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  wrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: heat
+        uses: ./
+        with:
+          run: timeout 20 sh -c 'while :; do :; done' || true
+          interval: "2"
+          artifact: heat-wrap
+      - run: echo "peak=${{ steps.heat.outputs.heat-peak }} cpu-min=${{ steps.heat.outputs.cpu-minutes }}"
+  start-stop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with: {mode: start, interval: "2"}
+      - run: pip install -e . && python3 -m unittest discover -v tests
+      - uses: ./
+        if: always()
+        with: {mode: stop, title: "Heat report (unit tests)"}

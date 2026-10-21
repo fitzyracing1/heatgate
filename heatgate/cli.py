@@ -44,10 +44,23 @@ def main(argv=None):
     r.add_argument("--low", type=float, default=0.5); r.add_argument("--poll", type=float, default=1.0)
     r.add_argument("command", nargs=argparse.REMAINDER)
     sub.add_parser("mcp", help="run a stdio MCP server")
+    sp = sub.add_parser("sample", help="append heat samples (JSONL) to a file until SIGTERM")
+    sp.add_argument("--out", required=True); sp.add_argument("--interval", type=float, default=5.0)
+    sp.add_argument("--count", type=int, default=None)
+    rp = sub.add_parser("report", help="summarize a sample file (markdown; optional GitHub outputs/JSON)")
+    rp.add_argument("file"); rp.add_argument("--summary", help="append markdown here (e.g. $GITHUB_STEP_SUMMARY)")
+    rp.add_argument("--github-output", help="write key=value outputs here (e.g. $GITHUB_OUTPUT)")
+    rp.add_argument("--json-out"); rp.add_argument("--title", default="Heat report")
     a = ap.parse_args(argv)
     if a.cmd == "mcp":
         from .mcp import serve
         return serve()
+    if a.cmd == "sample":
+        from .report import sample
+        return sample(a.out, a.interval, a.count)
+    if a.cmd == "report":
+        from .report import report
+        return report(a.file, a.summary, a.github_output, a.json_out, a.title)
     if a.cmd == "status":
         d = readings()
         if a.json:

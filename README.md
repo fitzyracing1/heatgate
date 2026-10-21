@@ -122,5 +122,42 @@ heatgate does not change it. To run it under heatgate:
 cd marslog && heatgate run --high 0.8 --low 0.5 -- python -m marslog.heat train
 ```
 
+## Heat in GitHub Actions
+
+This repo is also a composite action. It records heat (max of load1/cores and CPU busy fraction) during a job and
+appends a table to the job summary: avg/peak heat, duration, CPU-minutes (from `/proc/stat` deltas, all processes on
+the runner), CPU utilization, cores and sample count. The same values are step outputs (`heat-avg`, `heat-peak`,
+`duration-s`, `cpu-minutes`, `cpu-util`, `cores`, `samples`, `json`). Set `artifact: <name>` to upload the JSON
+summary and raw samples.
+
+Wrap one command:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: fitzyracing1/heatgate@main
+  with:
+    run: python -m mybot run
+    artifact: heat
+```
+
+Or sample the whole job:
+
+```yaml
+- uses: fitzyracing1/heatgate@main
+  with: {mode: start, interval: "5"}
+# ... your steps ...
+- uses: fitzyracing1/heatgate@main
+  if: always()
+  with: {mode: stop}
+```
+
+The action installs heatgate from its own ref into a venv under `$RUNNER_TEMP` (the `sample`/`report` subcommands
+are newer than PyPI 0.1.0). The same subcommands work locally:
+
+```
+heatgate sample --out heat.jsonl --interval 5 &   # stop with SIGTERM
+heatgate report heat.jsonl --json-out heat.json
+```
+
 ## License
 MIT
