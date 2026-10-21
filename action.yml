@@ -23,14 +23,30 @@ inputs:
     required: false
     default: ""
 outputs:
-  heat-avg: {description: Average heat (0..1+), value: "${{ steps.report.outputs.heat-avg }}"}
-  heat-peak: {description: Peak heat, value: "${{ steps.report.outputs.heat-peak }}"}
-  duration-s: {description: Sampled duration in seconds, value: "${{ steps.report.outputs.duration-s }}"}
-  cpu-minutes: {description: CPU-minutes used on the runner (all processes, /proc/stat deltas), value: "${{ steps.report.outputs.cpu-minutes }}"}
-  cpu-util: {description: Busy fraction of all cores over the window, value: "${{ steps.report.outputs.cpu-util }}"}
-  cores: {description: Logical cores, value: "${{ steps.report.outputs.cores }}"}
-  samples: {description: Number of samples, value: "${{ steps.report.outputs.samples }}"}
-  json: {description: Path to the JSON summary, value: "${{ steps.report.outputs.json }}"}
+  heat-avg:
+    description: "Average heat (0..1+)"
+    value: "${{ steps.report.outputs.heat-avg }}"
+  heat-peak:
+    description: "Peak heat"
+    value: "${{ steps.report.outputs.heat-peak }}"
+  duration-s:
+    description: "Sampled duration in seconds"
+    value: "${{ steps.report.outputs.duration-s }}"
+  cpu-minutes:
+    description: "CPU-minutes used on the runner (all processes, /proc/stat deltas)"
+    value: "${{ steps.report.outputs.cpu-minutes }}"
+  cpu-util:
+    description: "Busy fraction of all cores over the window"
+    value: "${{ steps.report.outputs.cpu-util }}"
+  cores:
+    description: "Logical cores"
+    value: "${{ steps.report.outputs.cores }}"
+  samples:
+    description: "Number of samples"
+    value: "${{ steps.report.outputs.samples }}"
+  json:
+    description: "Path to the JSON summary"
+    value: "${{ steps.report.outputs.json }}"
 runs:
   using: composite
   steps:
