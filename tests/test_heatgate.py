@@ -1,4 +1,4 @@
-import subprocess, sys, unittest
+import json, subprocess, sys, unittest
 import heatgate
 from heatgate import cli
 
@@ -46,3 +46,26 @@ class T(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMCP(unittest.TestCase):
+    def rpc(self, lines):
+        import io
+        from heatgate.mcp import serve
+        out = io.StringIO()
+        serve(io.StringIO("\n".join(json.dumps(l) for l in lines) + "\n"), out)
+        return [json.loads(l) for l in out.getvalue().splitlines()]
+
+    def test_flow(self):
+        import os
+        os.environ.pop("HEATGATE_ALLOW_RUN", None)
+        r = self.rpc([{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+                      {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                      {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                      {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "heat_status", "arguments": {}}},
+                      {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "run_throttled", "arguments": {"cmd": "true"}}}])
+        self.assertEqual(len(r), 4)
+        self.assertEqual({t["name"] for t in r[1]["result"]["tools"]},
+                         {"heat_status", "should_pause", "recommended_workers", "run_throttled"})
+        self.assertIn("heat", r[2]["result"]["structuredContent"])
+        self.assertTrue(r[3]["result"]["isError"])
