@@ -18,6 +18,10 @@ inputs:
     description: Heading for the summary section.
     required: false
     default: "Heat report"
+  watts-per-core:
+    description: "ESTIMATE factor for energy: watts per busy core (default 10)."
+    required: false
+    default: "10"
   artifact:
     description: "If non-empty, upload the JSON summary + raw samples as an artifact with this name."
     required: false
@@ -44,6 +48,12 @@ outputs:
   samples:
     description: "Number of samples"
     value: "${{ steps.report.outputs.samples }}"
+  est-energy-wh:
+    description: "ESTIMATED energy in Wh (machine-wide CPU-seconds x watts-per-core / 3600; not measured)"
+    value: "${{ steps.report.outputs.est-energy-wh }}"
+  watts-per-core:
+    description: "Watts-per-core factor used for the estimate"
+    value: "${{ steps.report.outputs.watts-per-core }}"
   json:
     description: "Path to the JSON summary"
     value: "${{ steps.report.outputs.json }}"
@@ -85,7 +95,7 @@ runs:
           for i in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
           rm -f "$d/sampler.pid"
         fi
-        "$d/venv/bin/heatgate" report "$d/samples.jsonl" --title "${{ inputs.title }}" \
+        "$d/venv/bin/heatgate" report "$d/samples.jsonl" --title "${{ inputs.title }}" --watts-per-core "${{ inputs.watts-per-core }}" \
           --summary "$GITHUB_STEP_SUMMARY" --github-output "$GITHUB_OUTPUT" --json-out "$d/heat.json"
         echo "json=$d/heat.json" >> "$GITHUB_OUTPUT"
     - if: always() && inputs.artifact != '' && steps.report.outcome == 'success'

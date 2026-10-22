@@ -1,14 +1,31 @@
 import argparse, json, os, signal, subprocess, sys, time
 from . import readings
+from .app import app_readings, cpu_seconds, energy_wh, watts_per_core
 
 def log(msg):
     print(time.strftime("%Y-%m-%dT%H:%M:%S%z"), "[heatgate]", msg, file=sys.stderr, flush=True)
 
-def run(cmd, high, low, poll, own_pid=True):
+def _children_cpu():
+    try:
+        import resource
+        u = resource.getrusage(resource.RUSAGE_CHILDREN)
+        return u.ru_utime + u.ru_stime
+    except Exception:
+        return None
+
+def run(cmd, high, low, poll, own_pid=True, gate="machine", energy=False, wpc=None, json_out=None):
+    """Run cmd; SIGSTOP its group when hot, SIGCONT when cool.
+
+    gate='machine' judges whole-machine heat; gate='app' judges only this command's process tree.
+    Always reports the app's CPU-seconds and ESTIMATED energy (CPU-s x watts-per-core)."""
+    wpc = watts_per_core(wpc)
+    base = _children_cpu()
+    t0 = time.monotonic()
     # own process group so SIGSTOP hits the whole tree
     p = subprocess.Popen(cmd, start_new_session=True)
-    paused, pauses, resumes, samples = False, 0, 0, []
-    log(f"started pid={p.pid} high={high} low={low}: {' '.join(cmd)}")
+    paused, pauses, resumes, samples, app_samples = False, 0, 0, [], []
+    paused_s, saved_cpu_s, rate, last_cpu, last_t, app_cpu = 0.0, 0.0, 0.0, 0.0, time.monotonic(), 0.0
+    log(f"started pid={p.pid} high={high} low={low} gate={gate}: {' '.join(cmd)}")
     def fwd(sig, _):
         try:
             os.killpg(p.pid, signal.SIGCONT); os.killpg(p.pid, sig)
@@ -17,33 +34,83 @@ def run(cmd, high, low, poll, own_pid=True):
     signal.signal(signal.SIGINT, fwd); signal.signal(signal.SIGTERM, fwd)
     while p.poll() is None:
         r = readings(interval=min(poll, 0.5))
+        now = time.monotonic(); dt = max(now - last_t, 1e-6)
+        c = cpu_seconds(p.pid)
+        if c is not None:
+            app_cpu = max(app_cpu, c)
+            ah = max(0.0, c - last_cpu) / dt / (r.get("cores") or os.cpu_count() or 1)
+            if not paused:
+                rate = max(0.0, c - last_cpu) / dt  # app CPU-seconds per second while running
+            last_cpu = c
+        else:
+            ah = None
+        if paused:
+            paused_s += dt; saved_cpu_s += rate * dt
+        last_t = now
         h = r["heat"]
-        # while paused, the child adds no load; judge on load1 only for low side
+        if ah is not None:
+            app_samples.append(ah)
+        g = ah if (gate == "app" and ah is not None) else h
         samples.append(h)
         try:
-            if not paused and h >= high:
+            if not paused and g >= high:
                 os.killpg(p.pid, signal.SIGSTOP); paused = True; pauses += 1
-                log(f"PAUSE heat={h:.2f} load1={r['load1']:.2f} cpu={r['cpu'] or 0:.2f}")
-            elif paused and h < low:
+                log(f"PAUSE {gate}_heat={g:.2f} heat={h:.2f} load1={r['load1']:.2f} cpu={r['cpu'] or 0:.2f}")
+            elif paused and (h if gate == "app" else g) < low:
+                # while paused the app is ~0, so resume on machine heat cooling below low
                 os.killpg(p.pid, signal.SIGCONT); paused = False; resumes += 1
                 log(f"RESUME heat={h:.2f} load1={r['load1']:.2f} cpu={r['cpu'] or 0:.2f}")
         except ProcessLookupError:
             break
         time.sleep(max(0.05, poll - 0.5))
     rc = p.wait()
+    wall = time.monotonic() - t0
+    after = _children_cpu()
+    if base is not None and after is not None:  # exact: rusage of the reaped tree
+        app_cpu = max(app_cpu, after - base)
+    s = {"rc": rc, "wall_s": round(wall, 2), "pauses": pauses, "resumes": resumes,
+         "paused_s": round(paused_s, 2), "app_cpu_seconds": round(app_cpu, 3),
+         "app_heat_avg": round(sum(app_samples) / len(app_samples), 3) if app_samples else None,
+         "app_heat_peak": round(max(app_samples), 3) if app_samples else None,
+         "heat_min": round(min(samples), 3) if samples else None,
+         "heat_avg": round(sum(samples) / len(samples), 3) if samples else None,
+         "heat_max": round(max(samples), 3) if samples else None,
+         "watts_per_core": wpc, "est_energy_wh": round(energy_wh(app_cpu, wpc), 6),
+         "est_saved_wh": round(energy_wh(saved_cpu_s, wpc), 6), "estimate": True}
     if samples:
         log(f"exit rc={rc} pauses={pauses} resumes={resumes} heat min/avg/max="
-            f"{min(samples):.2f}/{sum(samples)/len(samples):.2f}/{max(samples):.2f}")
+            f"{s['heat_min']:.2f}/{s['heat_avg']:.2f}/{s['heat_max']:.2f}")
+    log(f"app cpu={app_cpu:.2f}s wall={wall:.2f}s app_heat avg/peak="
+        f"{s['app_heat_avg'] if s['app_heat_avg'] is not None else 'n/a'}/{s['app_heat_peak'] if s['app_heat_peak'] is not None else 'n/a'} "
+        f"| ESTIMATE energy={s['est_energy_wh']:.4f} Wh saved_by_pauses={s['est_saved_wh']:.4f} Wh (paused {paused_s:.1f}s) @ {wpc:g} W/core")
+    if energy:
+        print(f"[heatgate] ESTIMATED energy for this call: {s['est_energy_wh']:.4f} Wh "
+              f"({app_cpu:.2f} CPU-s x {wpc:g} W/core / 3600; est. saved by pauses {s['est_saved_wh']:.4f} Wh)",
+              file=sys.stderr, flush=True)
+    if json_out:
+        with open(json_out, "w") as f: json.dump(s, f, indent=2)
     return rc
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="heatgate", description="Load-based throttle (load as heat proxy).")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("status"); s.add_argument("--json", action="store_true")
+    s.add_argument("--pid", type=int, help="report heat of this process tree instead of the whole machine")
+    s.add_argument("--watts-per-core", type=float, default=None)
     r = sub.add_parser("run"); r.add_argument("--high", type=float, default=0.8)
     r.add_argument("--low", type=float, default=0.5); r.add_argument("--poll", type=float, default=1.0)
+    r.add_argument("--gate", choices=["machine", "app"], default="machine",
+                   help="pause on whole-machine heat (default) or on this command's own heat")
+    r.add_argument("--energy", action="store_true", help="print an ESTIMATED Wh line for this call")
+    r.add_argument("--watts-per-core", type=float, default=None,
+                   help="ESTIMATE factor (default env HEATGATE_WATTS_PER_CORE or 10)")
+    r.add_argument("--json-out", help="write the run summary as JSON here")
     r.add_argument("command", nargs=argparse.REMAINDER)
-    sub.add_parser("mcp", help="run a stdio MCP server")
+    m = sub.add_parser("mcp", help="run an MCP server (stdio, or Streamable HTTP with --http)")
+    m.add_argument("--http", action="store_true", help="serve MCP Streamable HTTP at /mcp (bearer token required)")
+    m.add_argument("--host", default="127.0.0.1"); m.add_argument("--port", type=int, default=8765)
+    m.add_argument("--path-token", action="store_true",
+                   help="also accept the token as /mcp/<token> for clients that cannot send headers")
     sp = sub.add_parser("sample", help="append heat samples (JSONL) to a file until SIGTERM")
     sp.add_argument("--out", required=True); sp.add_argument("--interval", type=float, default=5.0)
     sp.add_argument("--count", type=int, default=None)
@@ -51,8 +118,12 @@ def main(argv=None):
     rp.add_argument("file"); rp.add_argument("--summary", help="append markdown here (e.g. $GITHUB_STEP_SUMMARY)")
     rp.add_argument("--github-output", help="write key=value outputs here (e.g. $GITHUB_OUTPUT)")
     rp.add_argument("--json-out"); rp.add_argument("--title", default="Heat report")
+    rp.add_argument("--watts-per-core", type=float, default=None)
     a = ap.parse_args(argv)
     if a.cmd == "mcp":
+        if a.http:
+            from .mcp import serve_http
+            return serve_http(a.host, a.port, path_token=a.path_token)
         from .mcp import serve
         return serve()
     if a.cmd == "sample":
@@ -60,7 +131,20 @@ def main(argv=None):
         return sample(a.out, a.interval, a.count)
     if a.cmd == "report":
         from .report import report
-        return report(a.file, a.summary, a.github_output, a.json_out, a.title)
+        return report(a.file, a.summary, a.github_output, a.json_out, a.title, a.watts_per_core)
+    if a.cmd == "status" and a.pid:
+        d = app_readings(a.pid)
+        if d["cpu_seconds"] is not None:
+            d.update({"watts_per_core": watts_per_core(a.watts_per_core),
+                      "est_energy_wh": round(energy_wh(d["cpu_seconds"], a.watts_per_core), 6), "estimate": True})
+        if a.json:
+            print(json.dumps(d))
+        elif d["source"] == "machine":
+            print(f"pid {a.pid}: per-process CPU unavailable here; machine heat={d['app_heat']:.2f}")
+        else:
+            print(f"pid={a.pid} app_heat={d['app_heat']:.2f} busy_cores={d['app_cores']:.2f}/{d['cores']} "
+                  f"cpu_total={d['cpu_seconds']:.2f}s est_energy={d['est_energy_wh']:.4f} Wh (ESTIMATE)")
+        return 0
     if a.cmd == "status":
         d = readings()
         if a.json:
@@ -73,7 +157,8 @@ def main(argv=None):
     cmd = a.command[1:] if a.command[:1] == ["--"] else a.command
     if not cmd:
         ap.error("run needs a command after --")
-    return run(cmd, a.high, a.low, a.poll)
+    return run(cmd, a.high, a.low, a.poll, gate=a.gate, energy=a.energy,
+               wpc=a.watts_per_core, json_out=a.json_out)
 
 if __name__ == "__main__":
     sys.exit(main())
