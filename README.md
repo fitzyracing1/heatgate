@@ -336,6 +336,60 @@ with ProcessPoolExecutor(heatgate.workers(max_workers=8)) as ex:  # fewer worker
     ...
 ```
 
+## AI call pacing + logging (`heatgate.calls`)
+
+Run AI API calls one at a time and log what actually happened. Everything logged is measured: wall-clock
+start / first-token / finish times and the token counts the provider returned. If a provider returns no
+usage, the token fields are `null`. heatgate never estimates tokens. (For Anthropic, `total_tokens` is
+`input_tokens + output_tokens`, both as reported.)
+
+```python
+from heatgate.calls import Pacer
+
+pacer = Pacer(log="calls.jsonl",          # JSONL, one record per call (default $HEATGATE_CALL_LOG)
+              concurrency=1,              # sequential by default: the next call waits for the previous one
+              gate=True,                  # optional: hold while measured temp >= 85 C (readings-only Gate;
+                                          #   or a dict of Gate kwargs, e.g. {"temp_high": 80, "router": {...}})
+              max_wait=120,               # cap on heat/latency holds
+              latency_threshold=8.0,      # optional: if mean of last 5 durations > 8 s, hold latency_hold s
+              latency_hold=5.0)
+
+resp = pacer.call(client.chat.completions.create, model="grok-4", messages=msgs)   # OpenAI / xAI
+resp = pacer.call(anthropic.messages.create, model="claude-...", max_tokens=512, messages=msgs)
+
+# streaming: first chunk = first-token time; usage taken from any chunk that carries it
+for chunk in pacer.stream(client.chat.completions.create, model="grok-4", messages=msgs,
+                          stream=True, stream_options={"include_usage": True}):
+    ...
+
+# anything else
+with pacer.track(model="gemini-2.5-pro") as c:
+    r = model.generate_content(prompt)
+    c.set_response(r)                     # reads usageMetadata / usage_metadata
+```
+
+Usage formats read: OpenAI-compatible `usage.prompt_tokens/completion_tokens/total_tokens` (incl. xAI) and
+`usage.input_tokens/output_tokens/total_tokens` (Responses API); Anthropic `usage.input_tokens/output_tokens`
+(including stream `message_start` / `message_delta`); Gemini `usageMetadata` (`promptTokenCount`,
+`candidatesTokenCount`, `totalTokenCount`). Works on dicts and SDK objects.
+
+Each record has `start_ts`, `first_token_ts`, `end_ts`, `duration_s`, `ttft_s`, `input_tokens`,
+`output_tokens`, `total_tokens`, `usage_source`, `ok`, `error`, `held_s`, and
+`held: {queue, heat, latency}`.
+
+```bash
+heatgate calls report calls.jsonl          # count, tokens, avg/p95 duration, avg first-token, time held and why
+heatgate calls report calls.jsonl --json
+
+# shell: one command at a time across processes (flock); concurrent invocations queue
+heatgate call --log calls.jsonl -- curl -s https://api.x.ai/v1/chat/completions ...
+heatgate call --heat-gate --max-wait 60 -- ./ask.sh
+```
+
+`heatgate call` records timings and exit code only. It does not parse token counts from command output.
+MCP: `call_log` summarizes a log, and `pace_status` says whether the next call would be held (lock busy,
+measured temperature, or recent latency).
+
 ## CLI
 
 ```

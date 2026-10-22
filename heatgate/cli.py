@@ -207,9 +207,30 @@ def main(argv=None):
     rp.add_argument("--github-output", help="write key=value outputs here (e.g. $GITHUB_OUTPUT)")
     rp.add_argument("--json-out"); rp.add_argument("--title", default="Heat report")
     rp.add_argument("--watts-per-core", type=float, default=None)
+    cp = sub.add_parser("calls", help="AI call log tools")
+    csub = cp.add_subparsers(dest="calls_cmd", required=True)
+    crp = csub.add_parser("report", help="summarize a heatgate.calls JSONL log")
+    crp.add_argument("file"); crp.add_argument("--json", action="store_true")
+    cl = sub.add_parser("call", help="run ONE command at a time via a lock file (concurrent invocations queue); log to JSONL")
+    cl.add_argument("--lock", help="lock file (default $HEATGATE_CALL_LOCK or $TMPDIR/heatgate-call-<uid>.lock)")
+    cl.add_argument("--log", help="JSONL log (default $HEATGATE_CALL_LOG or heatgate-calls.jsonl)")
+    cl.add_argument("--name"); cl.add_argument("--heat-gate", action="store_true",
+                    help="also hold while measured temperature >= --temp-high (readings-only Gate)")
+    cl.add_argument("--temp-high", type=float, default=85.0); cl.add_argument("--temp-low", type=float, default=75.0)
+    cl.add_argument("--max-wait", type=float, default=None); cl.add_argument("command", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
     from . import estimates_enabled
     est = estimates_enabled(getattr(a, "estimates", None))
+    if a.cmd == "calls":
+        from .calls import report as calls_report
+        return calls_report(a.file, a.json)
+    if a.cmd == "call":
+        from .calls import run_locked
+        c = a.command[1:] if a.command[:1] == ["--"] else a.command
+        if not c:
+            ap.error("call needs a command after --")
+        g = {"temp_high": a.temp_high, "temp_low": a.temp_low} if a.heat_gate else None
+        return run_locked(c, a.lock, a.log, a.name, gate=g, max_wait=a.max_wait)
     if a.cmd == "mcp":
         if a.http:
             from .mcp import serve_http

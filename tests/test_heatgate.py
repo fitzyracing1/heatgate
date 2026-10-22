@@ -66,7 +66,7 @@ class TestMCP(unittest.TestCase):
                       {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "run_throttled", "arguments": {"cmd": "true"}}}])
         self.assertEqual(len(r), 4)
         self.assertEqual({t["name"] for t in r[1]["result"]["tools"]},
-                         {"heat_status", "should_pause", "recommended_workers", "run_throttled", "app_heat", "energy_estimate", "grid_status", "router_status"})
+                         {"heat_status", "should_pause", "recommended_workers", "run_throttled", "app_heat", "energy_estimate", "grid_status", "router_status", "call_log", "pace_status"})
         self.assertIn("heat", r[2]["result"]["structuredContent"])
         self.assertTrue(r[3]["result"]["isError"])
 
