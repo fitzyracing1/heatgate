@@ -38,9 +38,9 @@ class T(unittest.TestCase):
         # high=0 forces a pause; low=-1 never resumes until exit -> use flipping heat
         import itertools; seq = itertools.chain([1.0], itertools.repeat(0.0))
         orig = cli.readings
-        cli.readings = lambda interval=0: {"heat": next(seq), "load1": 0, "cpu": 0}
+        cli.readings = lambda interval=0, **k: {"heat": next(seq), "load1": 0, "cpu": 0}
         try:
-            self.assertEqual(cli.run([sys.executable, "-c", "import time; time.sleep(1)"], 0.8, 0.5, 0.1), 0)
+            self.assertEqual(cli.run([sys.executable, "-c", "import time; time.sleep(1)"], 0.8, 0.5, 0.1, estimates=True), 0)
         finally:
             cli.readings = orig
 
@@ -69,3 +69,16 @@ class TestMCP(unittest.TestCase):
                          {"heat_status", "should_pause", "recommended_workers", "run_throttled", "app_heat", "energy_estimate", "grid_status", "router_status"})
         self.assertIn("heat", r[2]["result"]["structuredContent"])
         self.assertTrue(r[3]["result"]["isError"])
+
+# These suites exercise the opt-in ESTIMATES mode (load proxy, energy Wh, grid_stress);
+# readings-only defaults are covered in test_readings_mode.py.
+import os as _os
+_prev_est = None
+def setUpModule():
+    global _prev_est
+    _prev_est = _os.environ.get("HEATGATE_ESTIMATES"); _os.environ["HEATGATE_ESTIMATES"] = "1"
+def tearDownModule():
+    if _prev_est is None:
+        _os.environ.pop("HEATGATE_ESTIMATES", None)
+    else:
+        _os.environ["HEATGATE_ESTIMATES"] = _prev_est

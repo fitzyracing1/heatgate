@@ -79,7 +79,8 @@ class CliTest(unittest.TestCase):
                 main(["router", "--json"])
         self.assertIsNone(json.loads(buf.getvalue())["temp_c"])
     def test_run_max_wait_resumes(self):
-        with mock.patch("heatgate.cli.readings", return_value={"heat": 0.99, "load1": 9, "cores": 1, "cpu": 1.0}):
+        hot = {"mode": "readings", "temp_c": 95.0, "cpu_pct": 100.0, "cores": 1, "sensors": [], "no_readings": False}
+        with mock.patch("heatgate.cli.readings", return_value=hot), mock.patch.dict(os.environ, {"HEATGATE_ESTIMATES": ""}):
             err = io.StringIO()
             with redirect_stderr(err):
                 rc = main(["run", "--poll", "0.1", "--max-wait", "0.3", "--", sys.executable, "-c", "import time; time.sleep(1.5)"])

@@ -1,6 +1,6 @@
 """Record heat samples to a JSONL file and summarize them (used by the GitHub Action)."""
 import json, os, signal, time
-from . import readings
+from . import readings, estimates_enabled
 from .app import energy_wh, watts_per_core
 
 def _cpu_jiffies(path="/proc/stat"):
@@ -21,11 +21,15 @@ def _clk_tck():
         return 100
 
 def sample_once(stat_path="/proc/stat"):
-    r = readings(interval=0.2)
+    est = estimates_enabled()
+    r = readings(interval=0.2, estimates=est)
     j = _cpu_jiffies(stat_path)
-    return {"t": time.time(), "heat": r["heat"], "load1": r["load1"], "cpu": r["cpu"],
-            "cores": r["cores"], "busy_jiffies": j[0] if j else None,
-            "total_jiffies": j[1] if j else None}
+    row = {"t": time.time(), "mode": r["mode"], "temp_c": r["temp_c"],
+           "cpu": r["cpu"] if est else (None if r["cpu_pct"] is None else r["cpu_pct"] / 100.0),
+           "cores": r["cores"], "busy_jiffies": j[0] if j else None, "total_jiffies": j[1] if j else None}
+    if est:
+        row.update({"heat": r["heat"], "load1": r["load1"]})
+    return row
 
 def sample(out, interval=5.0, count=None):
     """Append one JSON line per sample to `out` until SIGTERM/SIGINT (or `count` samples)."""
@@ -45,16 +49,19 @@ def sample(out, interval=5.0, count=None):
     return 0
 
 def summarize(rows, clk_tck=None):
-    rows = [r for r in rows if r.get("heat") is not None]
+    rows = [r for r in rows if "t" in r]
     if not rows:
         return None
     clk = clk_tck or _clk_tck()
-    hs = [r["heat"] for r in rows]
+    hs = [r["heat"] for r in rows if r.get("heat") is not None]
+    ts = [r["temp_c"] for r in rows if r.get("temp_c") is not None]
     first, last = rows[0], rows[-1]
-    s = {"samples": len(rows), "cores": last.get("cores"),
+    s = {"mode": "estimates" if hs else "readings", "samples": len(rows), "cores": last.get("cores"),
          "duration_s": round(last["t"] - first["t"], 1),
-         "heat_avg": round(sum(hs) / len(hs), 3), "heat_peak": round(max(hs), 3),
+         "temp_avg_c": round(sum(ts) / len(ts), 1) if ts else None, "temp_peak_c": round(max(ts), 1) if ts else None,
          "cpu_minutes": None, "cpu_util": None}
+    if hs:
+        s.update({"heat_avg": round(sum(hs) / len(hs), 3), "heat_peak": round(max(hs), 3)})
     if first.get("busy_jiffies") is not None and last.get("busy_jiffies") is not None:
         busy = last["busy_jiffies"] - first["busy_jiffies"]
         tot = last["total_jiffies"] - first["total_jiffies"]
@@ -64,7 +71,7 @@ def summarize(rows, clk_tck=None):
 
 def add_energy(s, wpc=None):
     """ESTIMATE energy from machine-wide CPU-minutes (all processes on the box)."""
-    if s is None:
+    if s is None or s.get("mode") != "estimates":
         return s
     w = watts_per_core(wpc)
     s["watts_per_core"] = w
@@ -87,15 +94,22 @@ def markdown(s, title="Heat report"):
     if s is None:
         return f"### {title}\n\nNo heat samples recorded.\n"
     def fmt(v, spec): return "n/a" if v is None else format(v, spec)
+    est = s.get("mode") == "estimates"
     return (f"### {title}\n\n| metric | value |\n|---|---|\n"
-            f"| avg heat | {fmt(s['heat_avg'], '.2f')} |\n| peak heat | {fmt(s['heat_peak'], '.2f')} |\n"
+            f"| mode | {s.get('mode', 'readings')} |\n"
+            f"| avg temp (sensor) | {'no readings' if s.get('temp_avg_c') is None else format(s['temp_avg_c'], '.1f') + ' C'} |\n"
+            f"| peak temp (sensor) | {'no readings' if s.get('temp_peak_c') is None else format(s['temp_peak_c'], '.1f') + ' C'} |\n"
+            + (f"| avg heat (ESTIMATE) | {fmt(s['heat_avg'], '.2f')} |\n| peak heat (ESTIMATE) | {fmt(s['heat_peak'], '.2f')} |\n"
+               if est else "") +
             f"| duration | {fmt(s['duration_s'], '.1f')} s |\n| CPU-minutes | {fmt(s['cpu_minutes'], '.2f')} |\n"
             f"| CPU utilization | {'n/a' if s['cpu_util'] is None else format(s['cpu_util']*100, '.0f') + '%'} |\n"
             f"| cores | {s['cores']} |\n| samples | {s['samples']} |\n"
             + (f"| est. energy (ESTIMATE) | {fmt(s['est_energy_wh'], '.4f')} Wh @ {s['watts_per_core']:g} W/core |\n"
                if "est_energy_wh" in s else "") + "\n"
-            "_heat = max(load1/cores, CPU busy fraction); measured by [heatgate](https://github.com/fitzyracing1/heatgate). "
-            "Energy is an ESTIMATE: CPU-seconds x watts-per-core, not a power-meter reading._\n")
+            + ("_heat = max(load1/cores, CPU busy fraction) is an ESTIMATE; energy is an ESTIMATE: CPU-seconds x "
+               "watts-per-core, not a power-meter reading. By [heatgate](https://github.com/fitzyracing1/heatgate)._\n" if est else
+               "_Readings only: sensor temperatures and /proc/stat CPU time. Estimates (heat proxy, energy) are off; "
+               "set input `estimates: true`. By [heatgate](https://github.com/fitzyracing1/heatgate)._\n"))
 
 def report(path, summary=None, github_output=None, json_out=None, title="Heat report", wpc=None):
     s = add_energy(summarize(load(path)) if os.path.exists(path) else None, wpc)

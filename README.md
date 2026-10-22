@@ -6,13 +6,39 @@
 pipx install heatgate        # or: pip install heatgate
 ```
 
-A tiny, zero-dependency Python throttle that slows work down when the machine is "hot".
+A tiny, zero-dependency Python throttle that pauses work when the machine (or your router) is hot.
 
-**Why load instead of temperature?** Cloud VMs usually hide thermal sensors (`/sys/class/thermal` is empty,
-`psutil.sensors_temperatures()` returns nothing). What a VM *can* see is how busy its CPUs are. Busy CPUs are
-what make the host chip hot, so heatgate uses CPU load as a stand-in for heat.
+## Readings-only by default
 
-## How heat is computed
+By default heatgate reports and gates only on **measured readings**. Anything derived from a formula
+is an **estimate** and is opt-in with `--estimates`, env `HEATGATE_ESTIMATES=1`, `Gate(estimates=True)`,
+the MCP argument `estimates: true`, or the Action input `estimates: true`.
+
+| Quantity | Kind | Default |
+| --- | --- | --- |
+| CPU/GPU/Wi-Fi/router temperature (sysfs thermal, hwmon, psutil, router cmd/ubus) | reading | on |
+| Raw CPU utilization % (`/proc/stat`), process CPU-seconds | reading | on (reported, not gated) |
+| Outside air temperature (Open-Meteo) | reading | on (`heatgate grid`) |
+| Grid demand MW + recent peak MW (ISO-NE / EIA) | reading | on (`heatgate grid`) |
+| `heat` = max(load1/cores, CPU busy fraction): load as a heat proxy | estimate | `--estimates` |
+| Energy Wh (CPU-seconds x watts-per-core) | estimate | `--estimates` |
+| `temp_stress`, `demand_stress`, `grid_stress`, `router_temp_stress` scores | estimate | `--estimates` |
+
+**Readings mode gating:** pause when the hottest sensor reaches `--temp-high` (default 85 C) and resume
+below `--temp-low` (default 75 C). With `--router`, the router also pauses at the top of its
+`--router-band` (default 70 C). If no sensor is exposed (typical for cloud VMs), heatgate reports
+**no readings** and does **not** throttle. Grid stress only gates in estimates mode.
+
+```sh
+heatgate status                 # mode=readings temp=... cpu=...%
+heatgate run --temp-high 85 --temp-low 75 -- python train.py
+heatgate run --estimates --high 0.8 --low 0.5 -- python train.py   # old load-proxy behaviour
+```
+
+## How heat is computed (estimates mode)
+
+Cloud VMs usually hide thermal sensors, but they can see how busy their CPUs are. With `--estimates`,
+heatgate uses CPU load as a stand-in for heat:
 
 ```
 heat = max(load1 / cores, cpu_utilization [, (temp_C - 40) / 50 if a sensor exists])
@@ -20,7 +46,6 @@ heat = max(load1 / cores, cpu_utilization [, (temp_C - 40) / 50 if a sensor exis
 
 - `load1` comes from `/proc/loadavg` (falls back to `os.getloadavg()`).
 - `cpu_utilization` is the busy fraction from two `/proc/stat` samples taken 0.2 s apart.
-- If `/sys/class/thermal/thermal_zone*/temp` or psutil sensors ever show up, they are added in. If not, they are skipped.
 
 0.0 means idle and 1.0 means every core is saturated.
 
