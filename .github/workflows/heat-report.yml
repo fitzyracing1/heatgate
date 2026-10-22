@@ -11,7 +11,7 @@ jobs:
           run: timeout 20 sh -c 'while :; do :; done' || true
           interval: "2"
           artifact: heat-wrap
-      - run: echo "peak=${{ steps.heat.outputs.heat-peak }} cpu-min=${{ steps.heat.outputs.cpu-minutes }}"
+      - run: echo "mode=${{ steps.heat.outputs.mode }} temp-peak-c=${{ steps.heat.outputs.temp-peak-c }} cpu-min=${{ steps.heat.outputs.cpu-minutes }}"
   start-stop:
     runs-on: ubuntu-latest
     steps:
