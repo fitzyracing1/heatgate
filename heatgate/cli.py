@@ -13,7 +13,7 @@ def _children_cpu():
     except Exception:
         return None
 
-def run(cmd, high, low, poll, own_pid=True, gate="machine", energy=False, wpc=None, json_out=None):
+def run(cmd, high, low, poll, own_pid=True, gate="machine", energy=False, wpc=None, json_out=None, grid=None):
     """Run cmd; SIGSTOP its group when hot, SIGCONT when cool.
 
     gate='machine' judges whole-machine heat; gate='app' judges only this command's process tree.
@@ -51,12 +51,15 @@ def run(cmd, high, low, poll, own_pid=True, gate="machine", energy=False, wpc=No
         if ah is not None:
             app_samples.append(ah)
         g = ah if (gate == "app" and ah is not None) else h
+        gs = grid() if grid is not None else None  # cached; None on any failure (fail open)
+        if gs is not None:
+            g = max(g, grid.weight * gs)
         samples.append(h)
         try:
             if not paused and g >= high:
                 os.killpg(p.pid, signal.SIGSTOP); paused = True; pauses += 1
-                log(f"PAUSE {gate}_heat={g:.2f} heat={h:.2f} load1={r['load1']:.2f} cpu={r['cpu'] or 0:.2f}")
-            elif paused and (h if gate == "app" else g) < low:
+                log(f"PAUSE grid_stress={gs if gs is None else round(gs, 2)} {gate}_heat={g:.2f} heat={h:.2f} load1={r['load1']:.2f} cpu={r['cpu'] or 0:.2f}")
+            elif paused and max(h if gate == "app" else g, grid.weight * gs if gs is not None else 0.0) < low:
                 # while paused the app is ~0, so resume on machine heat cooling below low
                 os.killpg(p.pid, signal.SIGCONT); paused = False; resumes += 1
                 log(f"RESUME heat={h:.2f} load1={r['load1']:.2f} cpu={r['cpu'] or 0:.2f}")
@@ -105,7 +108,17 @@ def main(argv=None):
     r.add_argument("--watts-per-core", type=float, default=None,
                    help="ESTIMATE factor (default env HEATGATE_WATTS_PER_CORE or 10)")
     r.add_argument("--json-out", help="write the run summary as JSON here")
+    def grid_args(x):
+        x.add_argument("--zip"); x.add_argument("--lat", type=float); x.add_argument("--lon", type=float)
+        x.add_argument("--comfort", default="10,24", help="comfort band in C, lo,hi (default 10,24)")
+        x.add_argument("--grid-source", choices=["auto", "isone", "eia", "none"], default="auto")
+        x.add_argument("--ba", help="EIA balancing authority (with EIA_API_KEY), default ISNE")
+    r.add_argument("--grid", action="store_true", help="also pause on outside temp / grid stress (needs --zip or --lat/--lon)")
+    r.add_argument("--grid-weight", type=float, default=1.0)
+    grid_args(r)
     r.add_argument("command", nargs=argparse.REMAINDER)
+    gp = sub.add_parser("grid", help="outside temperature + power-grid stress (free public data, no key)")
+    grid_args(gp); gp.add_argument("--json", action="store_true")
     m = sub.add_parser("mcp", help="run an MCP server (stdio, or Streamable HTTP with --http)")
     m.add_argument("--http", action="store_true", help="serve MCP Streamable HTTP at /mcp (bearer token required)")
     m.add_argument("--host", default="127.0.0.1"); m.add_argument("--port", type=int, default=8765)
@@ -132,6 +145,28 @@ def main(argv=None):
     if a.cmd == "report":
         from .report import report
         return report(a.file, a.summary, a.github_output, a.json_out, a.title, a.watts_per_core)
+    if a.cmd in ("grid", "run"):
+        comfort = tuple(float(x) for x in a.comfort.split(","))
+        gkw = dict(zip_code=a.zip, lat=a.lat, lon=a.lon, comfort=comfort, source=a.grid_source, ba=a.ba)
+    if a.cmd == "grid":
+        if a.zip is None and (a.lat is None or a.lon is None):
+            ap.error("grid needs --zip or --lat and --lon")
+        from .grid import grid_status
+        d = grid_status(**gkw)
+        if a.json:
+            print(json.dumps(d)); return 0
+        f = lambda v, n=2: "n/a" if v is None else f"{v:.{n}f}"
+        where = f"{d['place']}, {d['state']}" if d["place"] else "(lat/lon)"
+        print(f"location={where} lat={f(d['lat'],4)} lon={f(d['lon'],4)}")
+        print(f"temp={f(d['temp_c'],1)}C comfort={comfort[0]:g}..{comfort[1]:g}C temp_stress={f(d['temp_stress'])}")
+        dm = d["demand"]
+        if dm:
+            print(f"demand[{dm['source']}]={dm['load_mw']:.0f} MW recent_peak={dm['peak_mw']:.0f} MW "
+                  f"ratio={dm['ratio']:.2f} at {dm['time']} demand_stress={f(d['demand_stress'])}")
+        else:
+            print("demand=n/a (no keyless feed for this area, or fetch failed)")
+        print(f"grid_stress={f(d['grid_stress'])}" + (f"  errors={d['errors']}" if d["errors"] else ""))
+        return 0
     if a.cmd == "status" and a.pid:
         d = app_readings(a.pid)
         if d["cpu_seconds"] is not None:
@@ -155,10 +190,16 @@ def main(argv=None):
                   f"load/core={d['load_norm']:.2f} cpu={(d['cpu'] or 0)*100:.0f}% temp={t}")
         return 0
     cmd = a.command[1:] if a.command[:1] == ["--"] else a.command
+    grid = None
+    if a.grid and a.grid_source != "none":
+        if a.zip is None and (a.lat is None or a.lon is None):
+            ap.error("--grid needs --zip or --lat and --lon")
+        from .grid import Grid
+        grid = Grid(weight=a.grid_weight, **gkw)
     if not cmd:
         ap.error("run needs a command after --")
     return run(cmd, a.high, a.low, a.poll, gate=a.gate, energy=a.energy,
-               wpc=a.watts_per_core, json_out=a.json_out)
+               wpc=a.watts_per_core, json_out=a.json_out, grid=grid)
 
 if __name__ == "__main__":
     sys.exit(main())

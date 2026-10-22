@@ -186,6 +186,46 @@ process tree. To count the inference, measure the server, e.g. `heatgate status 
 before and after the call and take the difference in `cpu_total`, or run the model in-process (llama.cpp
 `llama-cli`, which is in the tree). GPU energy is not counted at all.
 
+## Grid mode (outside temperature + power-grid stress)
+
+Pause heavy work when it is very hot/cold outside or the regional grid is near its peak. Free public
+data, **no API key by default**, cached 10 min (`HEATGATE_GRID_TTL` seconds), and **fail-open**: any
+network error just means the grid is ignored.
+
+```sh
+heatgate grid --zip 02740            # example: New Bedford, MA
+heatgate grid --lat 41.63 --lon -70.94 --json
+heatgate run --grid --zip 02740 --grid-weight 0.8 -- python train.py
+```
+
+```python
+from heatgate import Gate
+from heatgate.grid import Grid
+with Gate(high=0.8, low=0.5, grid=Grid(zip_code="02740", weight=0.8)):
+    heavy()
+```
+
+MCP tool: `grid_status` (`zip` or `lat`/`lon`, optional `comfort_lo`/`comfort_hi`).
+
+| Data | Source | Key |
+| --- | --- | --- |
+| ZIP -> lat/lon | api.zippopotam.us | none |
+| Temperature | Open-Meteo `current=temperature_2m` | none |
+| Grid demand (New England only) | ISO New England ISO Express 5-min system load (the public website's chart feed; undocumented, may change) | none |
+| Grid demand (any US balancing authority) | EIA-930 hourly demand | optional free key: `EIA_API_KEY`, `--ba` / `HEATGATE_GRID_BA` (default `ISNE`) |
+
+GridStatus and Electricity Maps both require keys and are not used.
+
+Formula:
+
+* `temp_stress` = 0 inside the comfort band (`--comfort 10,24` C), rising linearly to 1 at 15 C beyond either edge.
+* `demand_stress` = `clamp((load / recent_peak - 0.7) / 0.3)`; recent peak = max of the last ~2 days of
+  actual load and today's forecast (ISO-NE), or of the last 48 h (EIA).
+* `grid_stress = max(temp_stress, demand_stress)` over what is available (null if nothing is).
+* `effective_heat = max(local_heat, grid_weight * grid_stress)`; `run --grid` pauses/resumes on that.
+
+Outside New England without `EIA_API_KEY`, only temperature is used.
+
 ## Python API
 
 ```python
