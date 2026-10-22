@@ -1,6 +1,7 @@
 """Record heat samples to a JSONL file and summarize them (used by the GitHub Action)."""
 import json, os, signal, time
 from . import readings
+from .app import energy_wh, watts_per_core
 
 def _cpu_jiffies(path="/proc/stat"):
     """(busy, total) jiffies across all CPUs, or None."""
@@ -61,6 +62,15 @@ def summarize(rows, clk_tck=None):
         s["cpu_util"] = round(busy / tot, 3) if tot > 0 else None
     return s
 
+def add_energy(s, wpc=None):
+    """ESTIMATE energy from machine-wide CPU-minutes (all processes on the box)."""
+    if s is None:
+        return s
+    w = watts_per_core(wpc)
+    s["watts_per_core"] = w
+    s["est_energy_wh"] = None if s["cpu_minutes"] is None else round(energy_wh(s["cpu_minutes"] * 60, w), 5)
+    return s
+
 def load(path):
     rows = []
     with open(path) as f:
@@ -81,11 +91,14 @@ def markdown(s, title="Heat report"):
             f"| avg heat | {fmt(s['heat_avg'], '.2f')} |\n| peak heat | {fmt(s['heat_peak'], '.2f')} |\n"
             f"| duration | {fmt(s['duration_s'], '.1f')} s |\n| CPU-minutes | {fmt(s['cpu_minutes'], '.2f')} |\n"
             f"| CPU utilization | {'n/a' if s['cpu_util'] is None else format(s['cpu_util']*100, '.0f') + '%'} |\n"
-            f"| cores | {s['cores']} |\n| samples | {s['samples']} |\n\n"
-            "_heat = max(load1/cores, CPU busy fraction); measured by [heatgate](https://github.com/fitzyracing1/heatgate)._\n")
+            f"| cores | {s['cores']} |\n| samples | {s['samples']} |\n"
+            + (f"| est. energy (ESTIMATE) | {fmt(s['est_energy_wh'], '.4f')} Wh @ {s['watts_per_core']:g} W/core |\n"
+               if "est_energy_wh" in s else "") + "\n"
+            "_heat = max(load1/cores, CPU busy fraction); measured by [heatgate](https://github.com/fitzyracing1/heatgate). "
+            "Energy is an ESTIMATE: CPU-seconds x watts-per-core, not a power-meter reading._\n")
 
-def report(path, summary=None, github_output=None, json_out=None, title="Heat report"):
-    s = summarize(load(path)) if os.path.exists(path) else None
+def report(path, summary=None, github_output=None, json_out=None, title="Heat report", wpc=None):
+    s = add_energy(summarize(load(path)) if os.path.exists(path) else None, wpc)
     md = markdown(s, title)
     print(md)
     if summary:

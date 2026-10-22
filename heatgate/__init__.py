@@ -2,7 +2,8 @@
 import functools, glob, os, time
 
 __version__ = "0.1.0"
-__all__ = ["heat", "readings", "Gate", "pace", "throttled", "workers"]
+__all__ = ["heat", "readings", "Gate", "pace", "throttled", "workers", "app_heat", "app_readings",
+           "cpu_seconds", "energy_estimate", "energy_wh"]
 
 def _cores():
     return os.cpu_count() or 1
@@ -80,8 +81,11 @@ def pace(high=0.8, low=0.5, max_sleep=5.0, _heat=None, _sleep=time.sleep):
 
 class Gate:
     """Block on entry while heat >= high, until it drops below low (hysteresis)."""
-    def __init__(self, high=0.8, low=0.5, poll=1.0, timeout=None, _heat=None, _sleep=time.sleep):
-        self.high, self.low, self.poll, self.timeout = high, low, poll, timeout
+    def __init__(self, high=0.8, low=0.5, poll=1.0, timeout=None, pid=None, _heat=None, _sleep=time.sleep):
+        """pid: gate on that process tree's heat (busy cores / cores) instead of the whole machine."""
+        self.high, self.low, self.poll, self.timeout, self.pid = high, low, poll, timeout, pid
+        if _heat is None and pid is not None:
+            _heat = lambda: app_heat(pid, 0.2)
         self._heat = _heat or heat
         self._sleep = _sleep
         self.waited = 0.0
@@ -120,3 +124,5 @@ def workers(max_workers=None, min_workers=1, high=0.8, low=0.5, _heat=None):
         return min_workers
     frac = (high - h) / (high - low)
     return max(min_workers, int(round(min_workers + frac * (mx - min_workers))))
+
+from .app import app_heat, app_readings, cpu_seconds, energy_estimate, energy_wh  # noqa: E402

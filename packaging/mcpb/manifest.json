@@ -1,0 +1,55 @@
+{
+  "manifest_version": "0.3",
+  "name": "heatgate",
+  "display_name": "heatgate",
+  "version": "0.1.0",
+  "description": "Machine and per-app CPU heat, worker hints, and ESTIMATED energy (Wh) for local work.",
+  "long_description": "Zero-dependency MCP server. Heat is CPU load used as a stand-in for chip heat. Energy figures are estimates: CPU-seconds x watts-per-core, not a power-meter reading. `run_throttled` stays disabled unless you turn on *Allow running commands*.",
+  "author": {"name": "Joshua Almeida", "url": "https://github.com/fitzyracing1"},
+  "repository": {"type": "git", "url": "https://github.com/fitzyracing1/heatgate.git"},
+  "homepage": "https://github.com/fitzyracing1/heatgate",
+  "support": "https://github.com/fitzyracing1/heatgate/issues",
+  "license": "MIT",
+  "keywords": ["cpu", "heat", "throttle", "energy", "monitoring"],
+  "server": {
+    "type": "python",
+    "entry_point": "server/main.py",
+    "mcp_config": {
+      "command": "python3",
+      "args": ["${__dirname}/server/main.py"],
+      "env": {
+        "PYTHONPATH": "${__dirname}/server/lib",
+        "HEATGATE_ALLOW_RUN": "${user_config.allow_run}",
+        "HEATGATE_WATTS_PER_CORE": "${user_config.watts_per_core}"
+      }
+    }
+  },
+  "tools": [
+    {"name": "heat_status", "description": "Current machine heat: heat, load1, cores, cpu, temp_c"},
+    {"name": "should_pause", "description": "Whether heavy work should pause now"},
+    {"name": "recommended_workers", "description": "Worker count scaled down as heat rises"},
+    {"name": "app_heat", "description": "Heat and CPU-seconds of one process tree"},
+    {"name": "energy_estimate", "description": "ESTIMATED Wh from CPU-seconds or a pid"},
+    {"name": "run_throttled", "description": "Run a command under heatgate (only if allowed)"}
+  ],
+  "user_config": {
+    "allow_run": {
+      "type": "string",
+      "title": "Allow running commands (1 = yes)",
+      "description": "Set to 1 to let the AI launch shell commands via run_throttled. Leave 0 to keep it disabled.",
+      "default": "0",
+      "required": false
+    },
+    "watts_per_core": {
+      "type": "string",
+      "title": "Watts per busy core (estimate)",
+      "description": "Factor for energy ESTIMATES. Default 10.",
+      "default": "10",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {"python": ">=3.8"}
+  }
+}
