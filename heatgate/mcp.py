@@ -52,7 +52,42 @@ TOOLS.append({"name": "router_status", "description": "Router / Wi-Fi chip tempe
          "on_router": {"type": "boolean", "description": "use all local sensors (server runs on the router)"},
          "estimates": EST}}})
 
+TOOLS.append({"name": "call_log", "description": "Summarize a heatgate AI-call JSONL log (count, provider-reported "
+              "tokens, avg/p95 duration, time held and why) plus the last N records. Path defaults to $HEATGATE_CALL_LOG.",
+              "inputSchema": {"type": "object", "properties": {"path": {"type": "string"},
+                                                               "last": {"type": "integer", "description": "records to return (default 10)"}}}})
+TOOLS.append({"name": "pace_status", "description": "Whether the next AI call would be held now: call lock busy, "
+              "measured temperature >= temp_high (readings-only), recent measured latency above latency_threshold.",
+              "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "lock": {"type": "string"},
+                                                               "temp_high": THI, "latency_threshold": {"type": "number"},
+                                                               "window": {"type": "integer"}}}})
+
+def _calls_tool(name, args):
+    from . import calls
+    path = args.get("path") or calls.DEFAULT_LOG
+    recs = calls.load(path) if os.path.exists(path) else []
+    if name == "call_log":
+        return {"path": path, "summary": calls.summarize(recs), "last": recs[-int(args.get("last", 10)):]}
+    import fcntl
+    lock = args.get("lock") or os.environ.get("HEATGATE_CALL_LOCK") or os.path.join(
+        os.environ.get("TMPDIR", "/tmp"), f"heatgate-call-{os.getuid()}.lock")
+    busy = False
+    if os.path.exists(lock):
+        with open(lock, "a") as lf:
+            busy = calls._locked(lf)
+    from . import sensor_temp
+    t, th = sensor_temp(), float(args.get("temp_high", 85))
+    w = int(args.get("window", 5)); durs = [r["duration_s"] for r in recs[-w:] if isinstance(r.get("duration_s"), (int, float))]
+    lat = sum(durs) / len(durs) if durs else None
+    lt = args.get("latency_threshold")
+    reasons = (["lock"] if busy else []) + (["heat"] if t is not None and t >= th else []) + \
+              (["latency"] if lt is not None and lat is not None and lat > float(lt) else [])
+    return {"mode": "readings", "would_hold": bool(reasons), "reasons": reasons, "lock_busy": busy, "temp_c": t,
+            "temp_high": th, "recent_latency_s": lat, "latency_threshold_s": lt, "path": path}
+
 def call(name, args):
+    if name in ("call_log", "pace_status"):
+        return _calls_tool(name, args)
     if name == "router_status":
         from .router import router_status
         d = router_status(local="all" if args.get("on_router") else "wifi",

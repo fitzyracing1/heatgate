@@ -17,6 +17,10 @@
   `est-energy-wh` are only set with `estimates: true`.
 
 ### Added
+- AI call pacing + logging: `heatgate.calls.Pacer` (sequential by default, configurable concurrency, optional
+  readings-only heat gate reusing `Gate`/`max_wait`, optional measured-latency hold), JSONL log with timings and
+  provider-reported tokens (OpenAI/xAI, Anthropic, Gemini; null when not reported, never estimated),
+  `heatgate calls report`, `heatgate call -- <cmd>` (lock-file queue), MCP `call_log` / `pace_status`.
 - Router / Wi-Fi chip temperature (`heatgate router`, `run --router`, `Gate(router=)`, MCP `router_status`).
 - `heatgate watch` checks the temperatures of the devices you list (JSONL log, hot exit code, static status page).
 - `run --max-wait` / `Gate(max_wait=)`: stop waiting forever under sustained stress.
