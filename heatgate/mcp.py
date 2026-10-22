@@ -27,9 +27,19 @@ TOOLS = [
      "inputSchema": {"type": "object", "required": ["cmd"], "properties": {
          "cmd": {"type": "string", "description": "Command line to run"}, "high": HIGH, "low": LOW,
          "timeout": {"type": "number", "description": "Seconds before giving up (default 3600)"}}}},
+    {"name": "grid_status", "description": "Outside temperature (Open-Meteo) and power-grid stress (ISO-NE keyless; "
+     "EIA if EIA_API_KEY set) as grid_stress 0..1. Fails open (null fields) on network errors.",
+     "inputSchema": {"type": "object", "properties": {
+         "zip": {"type": "string", "description": "US ZIP code"}, "lat": {"type": "number"}, "lon": {"type": "number"},
+         "comfort_lo": {"type": "number", "description": "default 10 C"},
+         "comfort_hi": {"type": "number", "description": "default 24 C"}}}},
 ]
 
 def call(name, args):
+    if name == "grid_status":
+        from .grid import grid_status
+        return grid_status(args.get("zip"), args.get("lat"), args.get("lon"),
+                           (float(args.get("comfort_lo", 10)), float(args.get("comfort_hi", 24))))
     if name == "heat_status":
         return readings()
     if name == "should_pause":

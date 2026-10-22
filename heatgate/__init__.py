@@ -81,12 +81,18 @@ def pace(high=0.8, low=0.5, max_sleep=5.0, _heat=None, _sleep=time.sleep):
 
 class Gate:
     """Block on entry while heat >= high, until it drops below low (hysteresis)."""
-    def __init__(self, high=0.8, low=0.5, poll=1.0, timeout=None, pid=None, _heat=None, _sleep=time.sleep):
-        """pid: gate on that process tree's heat (busy cores / cores) instead of the whole machine."""
+    def __init__(self, high=0.8, low=0.5, poll=1.0, timeout=None, pid=None, _heat=None, _sleep=time.sleep, grid=None):
+        """pid: gate on that process tree's heat (busy cores / cores) instead of the whole machine.
+        grid: a heatgate.grid.Grid (or dict of its kwargs); effective = max(heat, weight*grid_stress)."""
         self.high, self.low, self.poll, self.timeout, self.pid = high, low, poll, timeout, pid
         if _heat is None and pid is not None:
             _heat = lambda: app_heat(pid, 0.2)
         self._heat = _heat or heat
+        if grid is not None:
+            from .grid import Grid, effective_heat
+            g = Grid(**grid) if isinstance(grid, dict) else grid
+            local = self._heat
+            self._heat = lambda: effective_heat(local(), g(), getattr(g, "weight", 1.0))
         self._sleep = _sleep
         self.waited = 0.0
     def wait(self):
