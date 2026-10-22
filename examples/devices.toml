@@ -1,0 +1,11 @@
+# Python 3.11+ for TOML; use devices.json on older Pythons. Credentials: env vars only.
+[[devices]]
+name = "this-machine"
+source = "local"
+threshold_c = 80
+
+[[devices]]
+name = "openwrt-router"
+source = "ubus"
+url = "http://192.168.1.1/ubus"
+threshold_c = 70

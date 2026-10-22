@@ -81,8 +81,11 @@ def pace(high=0.8, low=0.5, max_sleep=5.0, _heat=None, _sleep=time.sleep):
 
 class Gate:
     """Block on entry while heat >= high, until it drops below low (hysteresis)."""
-    def __init__(self, high=0.8, low=0.5, poll=1.0, timeout=None, pid=None, _heat=None, _sleep=time.sleep, grid=None):
+    def __init__(self, high=0.8, low=0.5, poll=1.0, timeout=None, pid=None, _heat=None, _sleep=time.sleep, grid=None,
+                 router=None, max_wait=None):
         """pid: gate on that process tree's heat (busy cores / cores) instead of the whole machine.
+        router: a heatgate.router.Router (or dict); effective also >= weight*router_temp_stress.
+        max_wait: stop waiting after this many seconds of polling, log a warning and proceed.
         grid: a heatgate.grid.Grid (or dict of its kwargs); effective = max(heat, weight*grid_stress)."""
         self.high, self.low, self.poll, self.timeout, self.pid = high, low, poll, timeout, pid
         if _heat is None and pid is not None:
@@ -93,6 +96,15 @@ class Gate:
             g = Grid(**grid) if isinstance(grid, dict) else grid
             local = self._heat
             self._heat = lambda: effective_heat(local(), g(), getattr(g, "weight", 1.0))
+        if router is not None:
+            from .router import Router
+            rt = Router(**router) if isinstance(router, dict) else router
+            inner = self._heat
+            def _with_router(inner=inner, rt=rt):
+                h, rs = inner(), rt()
+                return h if rs is None else max(h, getattr(rt, "weight", 1.0) * rs)
+            self._heat = _with_router
+        self.max_wait = max_wait
         self._sleep = _sleep
         self.waited = 0.0
     def wait(self):
@@ -101,6 +113,11 @@ class Gate:
         start = time.monotonic()
         while self._heat() >= self.low:
             if self.timeout is not None and time.monotonic() - start >= self.timeout:
+                break
+            if self.max_wait is not None and self.waited >= self.max_wait:
+                import logging
+                logging.getLogger("heatgate").warning(
+                    "heatgate: still hot after max_wait=%ss; proceeding anyway", self.max_wait)
                 break
             self._sleep(self.poll)
             self.waited += self.poll

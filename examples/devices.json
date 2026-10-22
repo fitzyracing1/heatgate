@@ -1,0 +1,8 @@
+{
+  "devices": [
+    {"name": "this-machine", "source": "local", "threshold_c": 80},
+    {"name": "this-machine-wifi", "source": "local-wifi", "threshold_c": 70},
+    {"name": "openwrt-router", "source": "ubus", "url": "http://192.168.1.1/ubus", "threshold_c": 70},
+    {"name": "router-over-ssh", "source": "cmd", "cmd": "ssh root@192.168.1.1 cat /sys/class/thermal/thermal_zone0/temp", "threshold_c": 70}
+  ]
+}

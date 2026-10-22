@@ -35,7 +35,19 @@ TOOLS = [
          "comfort_hi": {"type": "number", "description": "default 24 C"}}}},
 ]
 
+TOOLS.append({"name": "router_status", "description": "Router / Wi-Fi chip temperature as router_temp_stress 0..1 "
+     "over a band (default 40-70 C). Sources: local Wi-Fi hwmon, env HEATGATE_ROUTER_CMD, OpenWrt ubus "
+     "HEATGATE_ROUTER_URL (+USER/PASS env). Null when no temperature is available (fails open).",
+     "inputSchema": {"type": "object", "properties": {
+         "band_lo": {"type": "number", "description": "default 40 C"},
+         "band_hi": {"type": "number", "description": "default 70 C"},
+         "on_router": {"type": "boolean", "description": "use all local sensors (server runs on the router)"}}}})
+
 def call(name, args):
+    if name == "router_status":
+        from .router import router_status
+        return router_status(local="all" if args.get("on_router") else "wifi",
+                             band=(float(args.get("band_lo", 40)), float(args.get("band_hi", 70))))
     if name == "grid_status":
         from .grid import grid_status
         return grid_status(args.get("zip"), args.get("lat"), args.get("lon"),

@@ -13,7 +13,7 @@ def _children_cpu():
     except Exception:
         return None
 
-def run(cmd, high, low, poll, own_pid=True, gate="machine", energy=False, wpc=None, json_out=None, grid=None):
+def run(cmd, high, low, poll, own_pid=True, gate="machine", energy=False, wpc=None, json_out=None, grid=None, router=None, max_wait=None):
     """Run cmd; SIGSTOP its group when hot, SIGCONT when cool.
 
     gate='machine' judges whole-machine heat; gate='app' judges only this command's process tree.
@@ -23,6 +23,7 @@ def run(cmd, high, low, poll, own_pid=True, gate="machine", energy=False, wpc=No
     t0 = time.monotonic()
     # own process group so SIGSTOP hits the whole tree
     p = subprocess.Popen(cmd, start_new_session=True)
+    suppress_until, paused_at = 0.0, None
     paused, pauses, resumes, samples, app_samples = False, 0, 0, [], []
     paused_s, saved_cpu_s, rate, last_cpu, last_t, app_cpu = 0.0, 0.0, 0.0, 0.0, time.monotonic(), 0.0
     log(f"started pid={p.pid} high={high} low={low} gate={gate}: {' '.join(cmd)}")
@@ -54,12 +55,22 @@ def run(cmd, high, low, poll, own_pid=True, gate="machine", energy=False, wpc=No
         gs = grid() if grid is not None else None  # cached; None on any failure (fail open)
         if gs is not None:
             g = max(g, grid.weight * gs)
+        rs = router() if router is not None else None  # None when no temperature (fail open)
+        ext = max([0.0] + ([grid.weight * gs] if gs is not None else []) + ([router.weight * rs] if rs is not None else []))
+        g = max(g, ext)
+        if suppress_until and now < suppress_until:
+            g = min(g, high - 1e-9)  # grace period after a max-wait forced resume
         samples.append(h)
         try:
             if not paused and g >= high:
-                os.killpg(p.pid, signal.SIGSTOP); paused = True; pauses += 1
-                log(f"PAUSE grid_stress={gs if gs is None else round(gs, 2)} {gate}_heat={g:.2f} heat={h:.2f} load1={r['load1']:.2f} cpu={r['cpu'] or 0:.2f}")
-            elif paused and max(h if gate == "app" else g, grid.weight * gs if gs is not None else 0.0) < low:
+                os.killpg(p.pid, signal.SIGSTOP); paused = True; pauses += 1; paused_at = now
+                log(f"PAUSE router_stress={rs if rs is None else round(rs, 2)} grid_stress={gs if gs is None else round(gs, 2)} {gate}_heat={g:.2f} heat={h:.2f} load1={r['load1']:.2f} cpu={r['cpu'] or 0:.2f}")
+            elif paused and max_wait is not None and now - paused_at >= max_wait:
+                os.killpg(p.pid, signal.SIGCONT); paused = False; resumes += 1
+                suppress_until = now + max_wait
+                log(f"WARNING still hot after --max-wait {max_wait:g}s (effective={g:.2f}); resuming, "
+                    f"no re-pause for {max_wait:g}s")
+            elif paused and max(h if gate == "app" else g, ext) < low:
                 # while paused the app is ~0, so resume on machine heat cooling below low
                 os.killpg(p.pid, signal.SIGCONT); paused = False; resumes += 1
                 log(f"RESUME heat={h:.2f} load1={r['load1']:.2f} cpu={r['cpu'] or 0:.2f}")
@@ -115,10 +126,29 @@ def main(argv=None):
         x.add_argument("--ba", help="EIA balancing authority (with EIA_API_KEY), default ISNE")
     r.add_argument("--grid", action="store_true", help="also pause on outside temp / grid stress (needs --zip or --lat/--lon)")
     r.add_argument("--grid-weight", type=float, default=1.0)
+    r.add_argument("--max-wait", type=float, default=None,
+                   help="max seconds to stay paused; then resume with a warning (default: wait forever)")
+    def router_args(x):
+        x.add_argument("--router-cmd", help="command printing a temperature, e.g. 'ssh root@192.168.1.1 cat "
+                       "/sys/class/thermal/thermal_zone0/temp' (env HEATGATE_ROUTER_CMD)")
+        x.add_argument("--router-url", help="OpenWrt ubus URL, e.g. http://192.168.1.1/ubus "
+                       "(creds env HEATGATE_ROUTER_USER/HEATGATE_ROUTER_PASS; env HEATGATE_ROUTER_URL)")
+        x.add_argument("--on-router", action="store_true", help="use ALL local sysfs sensors (heatgate runs on the router)")
+        x.add_argument("--no-local-wifi", action="store_true", help="skip local Wi-Fi chip hwmon sensors")
+        x.add_argument("--router-band", default="40,70", help="temp band in C mapped to stress 0..1 (default 40,70)")
+    r.add_argument("--router", action="store_true", help="also pause on router / Wi-Fi chip temperature")
+    r.add_argument("--router-weight", type=float, default=1.0)
+    router_args(r)
     grid_args(r)
     r.add_argument("command", nargs=argparse.REMAINDER)
     gp = sub.add_parser("grid", help="outside temperature + power-grid stress (free public data, no key)")
     grid_args(gp); gp.add_argument("--json", action="store_true")
+    rr = sub.add_parser("router", help="router / Wi-Fi chip temperature (opt-in sources; fails open)")
+    router_args(rr); rr.add_argument("--json", action="store_true")
+    w = sub.add_parser("watch", help="check temps of YOUR listed devices (no scanning); exit 2 if any hot")
+    w.add_argument("--config", required=True, help="devices.json (or .toml on Python 3.11+)")
+    w.add_argument("--interval", type=float, default=300.0); w.add_argument("--once", action="store_true")
+    w.add_argument("--log", help="append JSONL readings here"); w.add_argument("--page-dir", help="write status.json + index.html here")
     m = sub.add_parser("mcp", help="run an MCP server (stdio, or Streamable HTTP with --http)")
     m.add_argument("--http", action="store_true", help="serve MCP Streamable HTTP at /mcp (bearer token required)")
     m.add_argument("--host", default="127.0.0.1"); m.add_argument("--port", type=int, default=8765)
@@ -139,6 +169,9 @@ def main(argv=None):
             return serve_http(a.host, a.port, path_token=a.path_token)
         from .mcp import serve
         return serve()
+    if a.cmd == "watch":
+        from .watch import watch
+        return watch(a.config, a.interval, a.once, a.log, a.page_dir)
     if a.cmd == "sample":
         from .report import sample
         return sample(a.out, a.interval, a.count)
@@ -148,6 +181,22 @@ def main(argv=None):
     if a.cmd in ("grid", "run"):
         comfort = tuple(float(x) for x in a.comfort.split(","))
         gkw = dict(zip_code=a.zip, lat=a.lat, lon=a.lon, comfort=comfort, source=a.grid_source, ba=a.ba)
+    if a.cmd in ("router", "run"):
+        rkw = dict(cmd=a.router_cmd, url=a.router_url,
+                   local=False if a.no_local_wifi else ("all" if a.on_router else "wifi"),
+                   band=tuple(float(x) for x in a.router_band.split(",")))
+    if a.cmd == "router":
+        from .router import router_status
+        d = router_status(**rkw)
+        if a.json:
+            print(json.dumps(d)); return 0
+        f = lambda v, n=1: "n/a" if v is None else f"{v:.{n}f}"
+        for x in d["sensors"]:
+            print(f"sensor {x['source']}:{x['name']} {x['temp_c']:.1f}C" + (" (wifi)" if x["wifi"] else ""))
+        c = lambda v: "n/a" if v is None else f"{v:.1f}C"
+        print(f"router_temp={c(d['temp_c'])} wifi_temp={c(d['wifi_temp_c'])} band={d['band'][0]:g}..{d['band'][1]:g}C "
+              f"router_temp_stress={f(d['router_temp_stress'], 2)}" + (f"  errors={d['errors']}" if d["errors"] else ""))
+        return 0
     if a.cmd == "grid":
         if a.zip is None and (a.lat is None or a.lon is None):
             ap.error("grid needs --zip or --lat and --lon")
@@ -196,10 +245,15 @@ def main(argv=None):
             ap.error("--grid needs --zip or --lat and --lon")
         from .grid import Grid
         grid = Grid(weight=a.grid_weight, **gkw)
+    router = None
+    if a.router:
+        from .router import Router
+        router = Router(weight=a.router_weight, **rkw)
     if not cmd:
         ap.error("run needs a command after --")
     return run(cmd, a.high, a.low, a.poll, gate=a.gate, energy=a.energy,
-               wpc=a.watts_per_core, json_out=a.json_out, grid=grid)
+               wpc=a.watts_per_core, json_out=a.json_out, grid=grid,
+               router=router, max_wait=a.max_wait)
 
 if __name__ == "__main__":
     sys.exit(main())
