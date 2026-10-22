@@ -31,6 +31,7 @@
     {"name": "app_heat", "description": "Heat and CPU-seconds of one process tree"},
     {"name": "energy_estimate", "description": "ESTIMATED Wh from CPU-seconds or a pid"},
     {"name": "grid_status", "description": "Outside temperature + power-grid stress (no key; fails open)"},
+    {"name": "router_status", "description": "Router / Wi-Fi chip temperature stress (opt-in; fails open)"},
     {"name": "run_throttled", "description": "Run a command under heatgate (only if allowed)"}
   ],
   "user_config": {

@@ -1,5 +1,5 @@
 name: heatgate heat report
-description: Record per-run "heat" (max of load1/cores and CPU busy fraction) and write avg/peak heat, duration and CPU-minutes to the job summary.
+description: Record real readings (sensor temperature, CPU time) per run and write them to the job summary; heat proxy and energy estimates are opt-in.
 branding: {icon: thermometer, color: orange}
 inputs:
   mode:
@@ -22,16 +22,29 @@ inputs:
     description: "ESTIMATE factor for energy: watts per busy core (default 10)."
     required: false
     default: "10"
+  estimates:
+    description: "'true' to opt in to ESTIMATES (load-as-heat proxy, energy Wh). Default readings-only."
+    required: false
+    default: "false"
   artifact:
     description: "If non-empty, upload the JSON summary + raw samples as an artifact with this name."
     required: false
     default: ""
 outputs:
+  mode:
+    description: "'readings' (default) or 'estimates'"
+    value: "${{ steps.report.outputs.mode }}"
+  temp-avg-c:
+    description: "Average sensor temperature C (empty when the runner exposes no sensor; typical for hosted VMs)"
+    value: "${{ steps.report.outputs.temp-avg-c }}"
+  temp-peak-c:
+    description: "Peak sensor temperature C (empty when no sensor)"
+    value: "${{ steps.report.outputs.temp-peak-c }}"
   heat-avg:
-    description: "Average heat (0..1+)"
+    description: "ESTIMATE, only with estimates: true. Average heat (0..1+)"
     value: "${{ steps.report.outputs.heat-avg }}"
   heat-peak:
-    description: "Peak heat"
+    description: "ESTIMATE, only with estimates: true. Peak heat"
     value: "${{ steps.report.outputs.heat-peak }}"
   duration-s:
     description: "Sampled duration in seconds"
@@ -49,7 +62,7 @@ outputs:
     description: "Number of samples"
     value: "${{ steps.report.outputs.samples }}"
   est-energy-wh:
-    description: "ESTIMATED energy in Wh (machine-wide CPU-seconds x watts-per-core / 3600; not measured)"
+    description: "Only with estimates: true. ESTIMATED energy in Wh (machine-wide CPU-seconds x watts-per-core / 3600; not measured)"
     value: "${{ steps.report.outputs.est-energy-wh }}"
   watts-per-core:
     description: "Watts-per-core factor used for the estimate"
@@ -76,6 +89,7 @@ runs:
       shell: bash
       run: |
         d="${{ steps.cfg.outputs.dir }}"; rm -f "$d/samples.jsonl"
+        export HEATGATE_ESTIMATES="${{ inputs.estimates == 'true' && '1' || '' }}"
         nohup setsid "$d/venv/bin/heatgate" sample --out "$d/samples.jsonl" --interval "${{ inputs.interval }}" > "$d/sampler.log" 2>&1 &
         echo $! > "$d/sampler.pid"
         sleep 1
@@ -95,6 +109,7 @@ runs:
           for i in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
           rm -f "$d/sampler.pid"
         fi
+        export HEATGATE_ESTIMATES="${{ inputs.estimates == 'true' && '1' || '' }}"
         "$d/venv/bin/heatgate" report "$d/samples.jsonl" --title "${{ inputs.title }}" --watts-per-core "${{ inputs.watts-per-core }}" \
           --summary "$GITHUB_STEP_SUMMARY" --github-output "$GITHUB_OUTPUT" --json-out "$d/heat.json"
         echo "json=$d/heat.json" >> "$GITHUB_OUTPUT"

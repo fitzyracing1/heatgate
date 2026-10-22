@@ -1,0 +1,2 @@
+{"devices": [{"name": "this-machine", "source": "local", "threshold_c": 80},
+             {"name": "this-machine-wifi", "source": "local-wifi", "threshold_c": 70}]}

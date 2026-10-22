@@ -93,7 +93,7 @@ def app_readings(pid, interval=0.5, _sleep=time.sleep):
     a = cpu_seconds(pid); t0 = time.monotonic()
     if a is None:
         from . import readings
-        r = readings(interval)
+        r = readings(interval, estimates=True)  # machine-wide fallback is the load proxy (an estimate)
         return {"pid": pid, "source": "machine", "app_heat": r["heat"], "app_cores": None,
                 "cpu_seconds": None, "cores": r["cores"]}
     _sleep(interval)

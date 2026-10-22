@@ -24,3 +24,16 @@ class R(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# These suites exercise the opt-in ESTIMATES mode (load proxy, energy Wh, grid_stress);
+# readings-only defaults are covered in test_readings_mode.py.
+import os as _os
+_prev_est = None
+def setUpModule():
+    global _prev_est
+    _prev_est = _os.environ.get("HEATGATE_ESTIMATES"); _os.environ["HEATGATE_ESTIMATES"] = "1"
+def tearDownModule():
+    if _prev_est is None:
+        _os.environ.pop("HEATGATE_ESTIMATES", None)
+    else:
+        _os.environ["HEATGATE_ESTIMATES"] = _prev_est

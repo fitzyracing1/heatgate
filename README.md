@@ -6,13 +6,39 @@
 pipx install heatgate        # or: pip install heatgate
 ```
 
-A tiny, zero-dependency Python throttle that slows work down when the machine is "hot".
+A tiny, zero-dependency Python throttle that pauses work when the machine (or your router) is hot.
 
-**Why load instead of temperature?** Cloud VMs usually hide thermal sensors (`/sys/class/thermal` is empty,
-`psutil.sensors_temperatures()` returns nothing). What a VM *can* see is how busy its CPUs are. Busy CPUs are
-what make the host chip hot, so heatgate uses CPU load as a stand-in for heat.
+## Readings-only by default
 
-## How heat is computed
+By default heatgate reports and gates only on **measured readings**. Anything derived from a formula
+is an **estimate** and is opt-in with `--estimates`, env `HEATGATE_ESTIMATES=1`, `Gate(estimates=True)`,
+the MCP argument `estimates: true`, or the Action input `estimates: true`.
+
+| Quantity | Kind | Default |
+| --- | --- | --- |
+| CPU/GPU/Wi-Fi/router temperature (sysfs thermal, hwmon, psutil, router cmd/ubus) | reading | on |
+| Raw CPU utilization % (`/proc/stat`), process CPU-seconds | reading | on (reported, not gated) |
+| Outside air temperature (Open-Meteo) | reading | on (`heatgate grid`) |
+| Grid demand MW + recent peak MW (ISO-NE / EIA) | reading | on (`heatgate grid`) |
+| `heat` = max(load1/cores, CPU busy fraction): load as a heat proxy | estimate | `--estimates` |
+| Energy Wh (CPU-seconds x watts-per-core) | estimate | `--estimates` |
+| `temp_stress`, `demand_stress`, `grid_stress`, `router_temp_stress` scores | estimate | `--estimates` |
+
+**Readings mode gating:** pause when the hottest sensor reaches `--temp-high` (default 85 C) and resume
+below `--temp-low` (default 75 C). With `--router`, the router also pauses at the top of its
+`--router-band` (default 70 C). If no sensor is exposed (typical for cloud VMs), heatgate reports
+**no readings** and does **not** throttle. Grid stress only gates in estimates mode.
+
+```sh
+heatgate status                 # mode=readings temp=... cpu=...%
+heatgate run --temp-high 85 --temp-low 75 -- python train.py
+heatgate run --estimates --high 0.8 --low 0.5 -- python train.py   # old load-proxy behaviour
+```
+
+## How heat is computed (estimates mode)
+
+Cloud VMs usually hide thermal sensors, but they can see how busy their CPUs are. With `--estimates`,
+heatgate uses CPU load as a stand-in for heat:
 
 ```
 heat = max(load1 / cores, cpu_utilization [, (temp_C - 40) / 50 if a sensor exists])
@@ -20,7 +46,6 @@ heat = max(load1 / cores, cpu_utilization [, (temp_C - 40) / 50 if a sensor exis
 
 - `load1` comes from `/proc/loadavg` (falls back to `os.getloadavg()`).
 - `cpu_utilization` is the busy fraction from two `/proc/stat` samples taken 0.2 s apart.
-- If `/sys/class/thermal/thermal_zone*/temp` or psutil sensors ever show up, they are added in. If not, they are skipped.
 
 0.0 means idle and 1.0 means every core is saturated.
 
@@ -225,6 +250,70 @@ Formula:
 * `effective_heat = max(local_heat, grid_weight * grid_stress)`; `run --grid` pauses/resumes on that.
 
 Outside New England without `EIA_API_KEY`, only temperature is used.
+
+## Router / Wi-Fi temperature (opt-in)
+
+Pause heavy work when your router or Wi-Fi chip is hot. **Temperature only**; nothing scans the
+network, and every source is opt-in. If no temperature is readable the result is `n/a` and it
+contributes nothing (fail open).
+
+Sources:
+
+* **Local Wi-Fi chip** (default): Linux hwmon sensors of Wi-Fi drivers (`iwlwifi`, `ath9k/10k/11k/12k`,
+  `mt76`/`mt79xx`, `brcmfmac`, `rtw88/89`, ...). `--on-router` uses *all* sysfs thermal zones and hwmon
+  sensors (use it when heatgate runs on the router itself).
+* **Your command**: `--router-cmd 'ssh root@192.168.1.1 cat /sys/class/thermal/thermal_zone0/temp'`
+  (env `HEATGATE_ROUTER_CMD`). The first number printed is parsed; values > 200 are millidegrees.
+* **OpenWrt ubus JSON-RPC** (the `/ubus` endpoint LuCI uses): `--router-url http://192.168.1.1/ubus`
+  (env `HEATGATE_ROUTER_URL`), credentials **only** from env `HEATGATE_ROUTER_USER` / `HEATGATE_ROUTER_PASS`.
+  Reads thermal/hwmon files via `file read`, which needs `rpcd-mod-file` and an rpcd ACL that allows it.
+
+Which routers expose a temperature: OpenWrt (and most Linux-based custom firmware) on SoCs with a
+thermal driver: yes, via sysfs/hwmon (SSH or ubus). Most ISP-supplied consumer routers: no. They
+have no shell or API that exposes it.
+
+```sh
+heatgate router                       # local Wi-Fi chip sensors
+heatgate router --router-cmd 'ssh root@192.168.1.1 cat /sys/class/thermal/thermal_zone0/temp' --json
+heatgate run --router --router-url http://192.168.1.1/ubus --router-weight 0.8 --max-wait 600 -- python train.py
+```
+
+```python
+from heatgate import Gate
+from heatgate.router import Router
+with Gate(router=Router(cmd="ssh root@192.168.1.1 cat /sys/class/thermal/thermal_zone0/temp"), max_wait=600):
+    heavy()
+```
+
+* `router_temp_stress = clamp((temp - 40) / (70 - 40))` (band set with `--router-band 40,70`).
+* `effective = max(local_heat, grid_weight*grid_stress, router_weight*router_temp_stress)`; unknown terms are dropped.
+* MCP tool: `router_status` (`band_lo`, `band_hi`, `on_router`; command/URL from env).
+
+### `--max-wait`
+
+`run --max-wait S` stops a pause after S seconds even if stress persists. It logs a WARNING,
+resumes, and won't pause again for another S seconds (so the job makes progress under sustained
+grid or router stress). `Gate(max_wait=S)` logs a warning and proceeds.
+
+### Scheduled checks of your own devices: `heatgate watch`
+
+```sh
+heatgate watch --config examples/devices.json --once --log temps.jsonl --page-dir site/
+heatgate watch --config devices.json --interval 300     # loop
+```
+
+Only the devices you list are read (sources `local`, `local-wifi`, `cmd`, `ubus`; see
+`examples/devices.json`, `examples/devices.toml` (TOML needs Python 3.11+)). Each reading is appended to
+the JSONL log. A device at or above its `threshold_c` prints a `WARNING HOT` line and the exit code
+is 2. `--page-dir` writes `status.json` + `index.html`. Passwords in the config are rejected; use env vars.
+
+Schedule it locally. GitHub-hosted runners can't reach a home router, so a cron entry or systemd timer is the right tool:
+
+```cron
+*/5 * * * * HEATGATE_ROUTER_PASS=... heatgate watch --config ~/devices.json --once --log ~/temps.jsonl --page-dir ~/temps
+```
+
+(A self-hosted GitHub Actions runner on your LAN can run the same command on a `schedule:`.)
 
 ## Python API
 
