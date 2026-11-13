@@ -21,6 +21,7 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/fitzyracing1/heatgate"
 Issues = "https://github.com/fitzyracing1/heatgate/issues"
+Funding = "https://github.com/sponsors/fitzyracing1"
 [project.scripts]
 heatgate = "heatgate.cli:main"
 [tool.setuptools]
